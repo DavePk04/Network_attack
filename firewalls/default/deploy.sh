@@ -1,0 +1,6 @@
+py r1.cmd("sudo nft -f   ~/LINFO2347/firewalls/default/ws.conf")
+py r2.cmd("sudo nft -f   ~/LINFO2347/firewalls/default/ws.conf")
+py dns.cmd("sudo nft -f  ~/LINFO2347/firewalls/default/dmz.conf")
+py http.cmd("sudo nft -f ~/LINFO2347/firewalls/default/dmz.conf")
+py ftp.cmd("sudo nft -f  ~/LINFO2347/firewalls/default/dmz.conf")
+py ntp.cmd("sudo nft -f  ~/LINFO2347/firewalls/default/dmz.conf")

@@ -140,47 +140,19 @@ def setup_firewall(net: Mininet) -> None:
     Set up basic enterprise network protection with nftables.
     :param net: Mininet network
     """
-    # Define tables for workstations and DMZ servers
-    devices = ['ws2', 'ws3', 'http', 'dns', 'ntp', 'ftp', 'internet']
-    for dev in devices:
-        net[dev].cmd('nft add table inet filter')
+    dmz_firewall = "~/LINFO2347/firewalls/default/dmz.conf"
+    r1_firewall = "~/LINFO2347/firewalls/default/r1.conf"
 
-    # Define chains for workstations and DMZ servers
-    for dev in devices:
-        net[dev].cmd('nft add chain inet filter input { type filter hook input priority 0 \; policy accept \; }')
-        net[dev].cmd('nft add chain inet filter forward { type filter hook forward priority 0 \; policy accept \; }')
-        net[dev].cmd('nft add chain inet filter output { type filter hook output priority 0 \; policy accept \; }')
+    dmz_hosts = ['http', 'dns', 'ntp', 'ftp']
+    r1_hosts = 'r1'
 
-    # Workstation rules: Allow workstation to ping and initiate connections to any host
-    for ws in ['ws2', 'ws3']:
-        net[ws].cmd('nft add rule inet filter output ip daddr {10.1.0.0/24,10.12.0.0/24,10.2.0.0/24} accept')
+    # Load firewall rules
+    # DMZ hosts
+    for host in dmz_hosts:
+        net[host].cmd(f"nft -f {dmz_firewall}")
 
-    # DMZ server rules: DMZ servers should not initiate connections or send pings. They can only respond to incoming connections.
-    for dmz in ['http', 'dns', 'ntp', 'ftp']:
-        # Block outgoing ICMP echo requests (pings)
-        net[dmz].cmd('nft add rule inet filter output ip protocol icmp icmp type echo-request drop')
-        # Block all other outgoing connections
-        net[dmz].cmd('nft add rule inet filter output counter reject')
-        # Allow incoming connections to be established and related traffic
-        net[dmz].cmd('nft add rule inet filter input ip protocol tcp tcp flags & (fin|syn|rst|ack) == syn counter accept')
-        net[dmz].cmd('nft add rule inet filter input ip protocol udp counter accept')
-        net[dmz].cmd('nft add rule inet filter input ip protocol icmp counter accept')
-
-    # Internet rules: The Internet can send a ping or initiate a connection only towards DMZ servers. They cannot send a ping or initiate connections towards workstations.
-    # Allow pings and connections to DMZ servers
-    net['internet'].cmd(
-        'nft add rule inet filter output ip daddr {10.12.0.10, 10.12.0.20, 10.12.0.30, 10.12.0.40} tcp dport {80, 53, 123, 21} accept') # ports: HTTP (80), DNS (53), NTP (123), and FTP (21)
-    net['internet'].cmd(
-        'nft add rule inet filter output ip daddr {10.12.0.10, 10.12.0.20, 10.12.0.30, 10.12.0.40} udp dport {80, 53, 123, 21} accept')
-    net['internet'].cmd(
-        'nft add rule inet filter output ip daddr {10.12.0.10, 10.12.0.20, 10.12.0.30, 10.12.0.40} icmp type echo-request accept')
-
-    # Block pings and connections to workstations
-    net['internet'].cmd('nft add rule inet filter output ip daddr {10.1.0.2, 10.1.0.3} drop')
-
-    # Commit the changes
-    for dev in devices:
-        net[dev].cmd('nft commit')
+    # R1
+    net[r1_hosts].cmd(f"nft -f {r1_firewall}")
 
 
 if __name__ == '__main__':
@@ -203,3 +175,4 @@ if __name__ == '__main__':
     else:
         # Deploy topology, open CLI
         run()
+

@@ -90,5 +90,213 @@ table inet dmz {
 
 ### attack
 
-To perform a network scan, we will send SYN packets to all ports (let's say in a range from 1 to 1000
+We will perform the Network Attack from the internet in 2 different phases:
+1. We will scan the subnet (10.12.0.0/24) with ICMP requests (see ./attacks/02_network_scan.py)
+2. We will mass-send SYN packets to every discovered host (aka any host that replied to ICMP echo request) on every single TCP port from 1 to 1000 and wait for replies
+
+```python
+import asyncio
+import socket
+import struct
+import threading
+from scapy.all import send, IP, ICMP, TCP, sniff
+import ipaddress
+
+responded_ips = []
+open_ports = []
+
+# MARK: - ICMP Scanner
+
+
+stop_icmp_event = threading.Event()
+stop_sniffing_event = threading.Event()
+
+
+def receive_icmp():
+    """ continuously listen for ICMP echo replies using raw sockets. """
+    # we tried to use scapy to listen for ICMP packets, but it needs access to tcpdump...
+    # so we are using raw sockets instead
+    icmp = socket.getprotobyname('icmp')
+
+    # https://docs.python.org/3/library/socket.html#socket.AF_INET
+    # https://docs.python.org/3/library/socket.html#socket.SOCK_RAW
+    sock = socket.socket(socket.AF_INET, socket.SOCK_RAW, icmp)
+
+    while not stop_icmp_event.is_set():
+        packet, addr = sock.recvfrom(1024)
+        ip_header = packet[:20]
+        iph = struct.unpack('!BBHHHBBH4s4s', ip_header)
+
+        # extract ip version and header length
+        version_ihl = iph[0]
+        version = version_ihl >> 4
+        ihl = version_ihl & 0xF
+        iph_length = ihl * 4
+
+        icmp_header = packet[iph_length:iph_length+8]
+        icmph = struct.unpack('!BBHHH', icmp_header)
+
+        if icmph[0] == 0:  # icmp echo reply
+            ip_responded = addr[0]
+            if ip_responded not in responded_ips:
+                responded_ips.append(ip_responded)
+            print(f"Received ICMP reply from {ip_responded}")
+
+    sock.close()
+
+def start_icmp_listener():
+    """ Starts a new thread that listens for ICMP packets. """
+    thread = threading.Thread(target=receive_icmp)
+    thread.daemon = True
+    thread.start()
+    return thread
+
+async def icmp_scan(subnet):
+    """ Asynchronously sends ICMP requests to a given subnet. """
+    async def send_icmp_request(ip):
+        packet = IP(dst=ip)/ICMP()
+        send(packet, verbose=0)
+
+    tasks = []
+
+    for ip in ipaddress.ip_network(subnet).hosts():
+        tasks.append(asyncio.create_task(send_icmp_request(str(ip))))
+
+    await asyncio.gather(*tasks)
+
+
+# MARK: - Port Scanner
+
+def scapy_tcp_sniff():
+    def process_packet(packet):
+        if TCP in packet and (packet[TCP].flags & 0x12) == 0x12:
+            print(f"Received SYN-ACK from {packet[IP].src} on port {packet[TCP].sport}")
+            open_ports.append(packet[TCP].sport)
+    sniff(
+        prn=process_packet,
+        filter="tcp",
+      # store=0, count=0, 
+        stop_filter=lambda _: stop_sniffing_event.is_set()
+    )
+
+
+def start_tcp_listener():
+    """ Starts a new thread for listening to TCP responses. """
+    thread = threading.Thread(target=scapy_tcp_sniff)
+    thread.daemon = True
+    thread.start()
+    return thread
+
+
+async def send_syn_packet(host: str, port: int):
+    """ Asynchronously sends a SYN packet to a specific port on a host. """
+    packet = IP(dst=host)/TCP(dport=port, flags="S")
+    send(packet, verbose=0)
+
+async def send_syn_packets(host: str, port_start: int, port_end: int):
+    """ Sends SYN packets to a range of ports on a specified host concurrently. """
+    print(f"Scanning ports {port_start}-{port_end} on {host}")
+    tasks = []
+    for port in range(port_start, port_end + 1):
+        task = asyncio.create_task(send_syn_packet(host, port))
+        tasks.append(task)
+        if len(tasks) >= 250:
+            await asyncio.gather(*tasks)
+            tasks = []
+    await asyncio.gather(*tasks)  # Ensure all remaining tasks are completed
+
+
+
+async def main():
+    subnet = "10.12.0.0/24"
+    global responded_ips, open_ports
+    stop_icmp_event.clear()
+    thread = start_icmp_listener()
+    await asyncio.sleep(0.2)
+    await icmp_scan(subnet)
+    # Stop the listener thread
+    await asyncio.sleep(1)  # Wait for the listener to finish processing
+    stop_icmp_event.set()
+    thread.join()
+
+    for ip in responded_ips:
+        port_start, port_end = 1, 100
+        stop_sniffing_event.clear()
+        open_ports.clear()
+        tcp_thread = start_tcp_listener()
+        await send_syn_packets(ip, port_start, port_end)
+        await asyncio.sleep(1)
+        stop_sniffing_event.set()
+        # there is now way to cleanly stop the sniffing thread in scapy without sending a packet
+        dummy_packet = IP(dst=ip)/TCP(dport=port_start, flags="F")
+        send(dummy_packet, verbose=0)
+        tcp_thread.join()
+        print(f"Open ports on the host {ip}: {open_ports}")
+
+
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+```
+
+
+The following attack on the default network outputs this result:
+
+```
+Received ICMP reply from 10.12.0.1
+Received ICMP reply from 10.12.0.2
+Received ICMP reply from 10.12.0.10
+Received ICMP reply from 10.12.0.20
+Received ICMP reply from 10.12.0.30
+Received ICMP reply from 10.12.0.40
+Scanning ports 1-100 on 10.12.0.1
+Open ports on the host 10.12.0.1: []
+Scanning ports 1-100 on 10.12.0.2
+Open ports on the host 10.12.0.2: []
+Scanning ports 1-100 on 10.12.0.10
+Received SYN-ACK from 10.12.0.10 on port 22
+Received SYN-ACK from 10.12.0.10 on port 80
+Open ports on the host 10.12.0.10: [22, 80]
+Scanning ports 1-100 on 10.12.0.20
+Open ports on the host 10.12.0.20: []
+Scanning ports 1-100 on 10.12.0.30
+Received SYN-ACK from 10.12.0.30 on port 22
+Open ports on the host 10.12.0.30: [22]
+Scanning ports 1-100 on 10.12.0.40
+Received SYN-ACK from 10.12.0.40 on port 21
+Received SYN-ACK from 10.12.0.40 on port 22
+Open ports on the host 10.12.0.40: [21, 22]
+```
+
+
+We successfully performed a TCP network scan on every accessible host in the `10.12.0.0/24` subnet.
+Doing this for UDP is more challenging wihtout specialized tools such as NMAP as UDP is stateless, and sending empty requests to some UDP servers doesn't guarantee a response even though the port is open.
+
+### Mitigation
+
+To mitigate network scanning, we implemented the same protectin as ssh bruteforce attack (ban the ip address sending a suspicious amount of suspicious packets for 2 minutes), as this attack is basically ICMP brute-forcing, and creatting a massive amount of new connections that is rarely justified for a single host in the real world. Of course if some service legitimately creates a lot of new TCP connections, we can create an exception for it with `nftables`.
+```nftables
+table inet r2 {
+  set blocklist {
+    type ipv4_addr
+    timeout 2m      # expire ban after 2 minutes
+    size 65536
+  }
+
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+
+    # Check if source IP is in blocklist and drop if true
+    ip saddr @blocklist drop;
+
+    # Rate limiting ICMP requests from r2-eth0 to r2-eth12
+    iif "r2-eth0" oif "r2-eth12" ip protocol icmp icmp type echo-request limit rate 120/minute burst 10 packets add @blocklist { ip saddr timeout 2m } drop;
+    iif "r2-eth0" oif "r2-eth12" ip protocol tcp ct state new limit rate 50/minute burst 10 packets add @blocklist { ip saddr timeout 2m } drop;
+    iif "r2-eth0" oif "r2-eth12" accept;
+
+    # Allow responses from DMZ servers to the Internet or workstations
+    iif "r2-eth12" oif "r2-eth0" ct state established,related accept;
+  }
+}
+```
 

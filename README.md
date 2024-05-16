@@ -360,4 +360,29 @@ mininet> iperf ws2 dns
 ```
 
 
+### mitigation
+One form of mitigation here might be to filter packets pretanding to originate from places they don't originate from ([https://www.rfc-editor.org/rfc/rfc2827.txt](BCP 38)).
+For example, router r2 with two interfaces: eth0 (connected to the internet) and eth12 (connected to the internal LAN). 
+The subnet for eth0 is 10.2.0.0/24. We should block any packets falsely claiming to come from a local IP address, 
+except those from the 10.2.0.0/24 subnet.
 
+This technique does indeed prevent anyone from outside to DDoS our company's internal infrastructure by multiplying attack capability with our own infrastructure (DNS server). 
+This does not prevent use of our DNS server for any other DNS reflected DDoS activity targeted at external services. 
+To prevent this kind of activity, we would have to rate limit our DNS server and 
+
+
+## ARP Cache poisoning
+
+
+### Attack
+
+```python
+
+```
+
+### Mitigation
+
+
+```
+# nftables: 
+```

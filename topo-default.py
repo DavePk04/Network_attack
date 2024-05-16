@@ -15,6 +15,7 @@ from mininet.topo import Topo
 from mininet.examples.linuxrouter import LinuxRouter
 from mininet.log import setLogLevel, info
 from mininet.cli import CLI
+from pathlib import Path
 import argparse
 import time
 
@@ -103,12 +104,12 @@ def stop_services(net: Mininet) -> None:
     info(net['ftp'].cmd("killall vsftpd"))
 
 
-def run():
+def run(fw: str):
     topo = TopoSecu()
     net = Mininet(topo=topo)
 
     add_routes(net)
-    setup_firewall(net)  # set up the firewall
+    setup_firewall(net, fw)
     stop_services(net)
     time.sleep(1)
     start_services(net)
@@ -119,12 +120,12 @@ def run():
     net.stop()
 
 
-def ping_all():
+def ping_all(fw: str):
     topo = TopoSecu()
     net = Mininet(topo=topo)
 
     add_routes(net)
-    setup_firewall(net)  # set up the firewall
+    setup_firewall(net, fw)
     stop_services(net)
     time.sleep(1)
     start_services(net)
@@ -135,24 +136,39 @@ def ping_all():
     net.stop()
 
 
-def setup_firewall(net: Mininet) -> None:
+def setup_firewall(net: Mininet, fw: str) -> None:
     """
-    Set up basic enterprise network protection with nftables.
+    Set up firewall from fw directory with nftables.
     :param net: Mininet network
     """
-    dmz_firewall = "~/LINFO2347/firewalls/default/dmz.conf"
-    r1_firewall = "~/LINFO2347/firewalls/default/r1.conf"
+    fw_dir = Path(f"~/LINFO2347/firewalls/").expanduser().resolve() / fw
+    if not fw_dir.exists():
+        raise FileNotFoundError(f"Firewall configuration directory {fw_dir} does not exist.")
 
-    dmz_hosts = ['http', 'dns', 'ntp', 'ftp']
-    r1_hosts = 'r1'
 
-    # Load firewall rules
-    # DMZ hosts
-    for host in dmz_hosts:
-        net[host].cmd(f"nft -f {dmz_firewall}")
+    dmz_firewall = fw_dir / "dmz.conf"
+    r1_firewall = fw_dir / "r1.conf"
+    r2_firewall = fw_dir / "r2.conf"
+    ws2_firewall = fw_dir / "ws2.conf"
+    ws3_firewall = fw_dir / "ws3.conf"
 
-    # R1
-    net[r1_hosts].cmd(f"nft -f {r1_firewall}")
+    # check if the firewall configuration files exist
+    for file, host in [
+            (dmz_firewall, 'http'),
+            (dmz_firewall, 'dns'),
+            (dmz_firewall, 'ntp'),
+            (dmz_firewall, 'ftp'),
+            (r1_firewall, 'r1'),
+            (r2_firewall, 'r2'),
+            (ws2_firewall, 'ws2'),
+            (ws3_firewall, 'ws3')
+    ]:
+        if not file.exists():
+            continue
+        print(f"Applying firewall rules for {host} from {file}")
+        # net[host].cmd(f"nft -f {file}")
+        # print the command stdout and stderr
+        print(net[host].cmd(f"nft -f {file}"))
 
 
 if __name__ == '__main__':
@@ -164,6 +180,8 @@ if __name__ == '__main__':
     )
     # Optional flag -p
     parser.add_argument("-p", "--pingall", action="store_true", help="Perform pingall test")
+    # optional --fw flag (defaults to `default`)
+    parser.add_argument("--fw", help="Firewall configuration to use", default="default")
     # Parse arguments
     args = parser.parse_args()
 
@@ -171,8 +189,8 @@ if __name__ == '__main__':
 
     if args.pingall:
         # Deploy topology, run pingall test, then exit
-        ping_all()
+        ping_all(args.fw)
     else:
         # Deploy topology, open CLI
-        run()
+        run(args.fw)
 

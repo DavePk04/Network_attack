@@ -5,25 +5,90 @@
 ## Project Overview
 
 ## Table of Contents
+TODO
 - [Project Overview](#project-overview)
 - [Basic enterprise network protection](#Basic-enterprise-network-protection)
 - [Network Attacks](#network-attacks)
 - [Network Protection](#network-protection)
 - [Launch topology attacks and protection](#Launch-topology-attacks-and-protection)
 
-## Basic network protection
-In the new version of the network, we have implemented a basic firewall using nftables. 
-The configuration script is located in the `topo-default.sh` file."
+## Initial Project Setup
+Before executing the attacks, we must prepare the network topology and settings.
+After starting the VM Mininet, copy the project files to the VM as follows:
+
+- Move the `topo-default.sh` file to `/home/mininet/LINFO2347/`
+- Move the `attacks` folder to `/home/mininet/LINFO2347/`
+- Move the `firewalls` folder to `/home/mininet/LINFO2347/`
+
+Now, you can execute the project files.
 
 To run the new configuration, execute the following command:
 
 ```sudo -E python3 ~/LINFO2347/topo-default.py```
+
+Note1: The project files are in the `LINFO2347` folder. Ensure you are in the `LINFO2347` folder to execute the project files for the next steps.
+Note2: To configure the firewall with nftables, we used `inet` to create the tables. The `inet` table is used to create the tables in the `inet` family.
+Allowing the firewall to filter ipv4 and ipv6 packets.
+Note3: After running each attack and its protection, you must use the command `sudo mn -c` to clear the mininet cache,
+then restart the network topology by using the command above to reset the network to its initial state.
+## Basic enterprise network protection
+In the new version of the network, we have implemented firewall rules for basic enterprise network protection using nftables. 
+The configuration script is located in the `topo-default.sh` file."
+
+Policies:
+- Workstations can send a ping and initiate a connection towards any other host (other workstations, DMZ servers, internet).
+- DMZ servers cannot send any ping or initiate any connection. They can only respond to incoming connections.
+- The Internet can send a ping or initiate a connection only towards DMZ servers. They cannot send a ping or initiate connections towards workstations.
+
+
+nftables configuration on the router r1:
+```text
+table inet r1 {
+  chain forward {
+    type filter hook forward priority 0; policy drop;
+
+    # allow workstations to ping any other host in the network
+    iif "r1-eth0" oif "r1-eth12" accept;
+    
+    # allow responses from DMZ servers to the Internet or workstations
+    iif "r1-eth12" oif "r1-eth0" ct state established,related accept
+    
+    # allow the workstations to communicate each other
+    iif "r1-eth0" oif "r1-eth0" accept;
+    
+    #allow the router r1 to forward packets on its interface eth12
+    iif "r1-eth12" oif "r1-eth12" accept;
+  }
+}
+```
+At this point, the workstations are able to ping and initiate a connection towards any other host. 
+The internet cannot establish a connection with the workstations, but it can reply to the workstations (ICMP echo-reply for example).
+
+nftables configuration on the DMZ servers:
+```text
+table inet dmz {
+    # Accept incoming connections from any other host
+    chain inbound {
+        type filter hook input priority 0; policy accept;
+    }
+    chain outbound {
+        # Drop outgoing connections
+        type filter hook output priority 0; policy drop;
+        # Just allow responses to established or related sessions from workstations and internet
+        ip daddr { 10.1.0.2, 10.1.0.3, 10.2.0.2 } ct state established,related accept;
+    }
+}
+```
+The DMZ servers cannot send any ping or initiate any connection towards workstations. They can only respond to incoming connections.
+They can only respond to incoming connections from workstations and the internet.
 
 ### Test the Firewall
 
 Our `nftables` firewall configuration was tested using the `pingall` command, yielding the following results:
 
 ```text
+mininet> pingall
+*** Ping: testing ping reachability
 dns -> X X X X X X X X
 ftp -> X X X X X X X X
 http -> X X X X X X X X
@@ -39,20 +104,51 @@ ws3 -> dns ftp http internet ntp r1 r2 ws2
 ## SSH/FTP Brute force
 
 ### attack
+The attack script is located `attacks/01_ssh_bruteforce.py`.
 
 We performed a basic ssh bruteforce with `paramiko` and a 10k password 
 list to which we added "mininet" on line 50 to avoid waiting too long
 
-to run the attack from the internet, run
+to run the attack from the internet (10.2.0.2), run
+
 `internet python /home/mininet/LINFO2347/attacks/01_ssh_bruteforce.py`
 
 The attack is performed in parallel with 7 threads. 
 
-### mitigation
+[//]: # (TODO: add more details about the attack)
+### Result of the attack
+```text
+mininet> internet python /home/mininet/LINFO2347/attacks/01_ssh_bruteforce.py
+Failed password: 12345678
+Failed password: 12345
+Failed password: password
+Failed password: 1234
+Failed password: qwerty
+.
+.
+.
+Failed password: charlie
+Failed password: andrew
+Failed password: michelle
+Success! Connected with password: mininet
+Failed password: love
+Failed password: sunshine
+Failed password: jessica
+Failed password: asshole
+Failed password: 6969
+Failed password: pepper
+Brute-force successful: mininet
+```
+### Protection
 
 To mitigate brute-force attack we can simply rate-limit new connections
 to 5 new connections per minute. If a client goes over this limit,
-his ip address will be added to a blacklist for two minutes
+his ip address will be added to a blacklist for two minutes.
+
+Command to run the protection:
+```bash
+ sudo -E python3 ~/LINFO2347/topo-default.py --fw 01
+```
 
 ```nftables
 table inet dmz {
@@ -86,13 +182,41 @@ table inet dmz {
  }
 ```
 
-## Network scan
+### Test the protection
+You can test the protection manually by trying to connect the internet to the http server through ssh.
+You can use this command to test the protection:
 
+```bash
+mininet> internet bash
+```
+Then, you can try to connect to the http server through ssh:
+```bash
+ssh mininet@10.12.0.10
+```
+As you can see from the screenshot below, the connection is blocked after 5 attempts.
+Therefore, the protection is working as expected. The user is blocked for 2 minutes. While 
+without this protection, the user would have been able to try an unlimited number of passwords.
+![Screenshot 2024-05-17 at 12.55.33.png](..%2F..%2F..%2F..%2Fvar%2Ffolders%2Fmj%2Fg2t_mwr929g8zyfpzwm6mymh0000gn%2FT%2FTemporaryItems%2FNSIRD_screencaptureui_m5qcpx%2FScreenshot%202024-05-17%20at%2012.55.33.png)
+
+
+### Discussion
+One downside of this approach are false positives. 
+For example, an attacker could lock out a legitimate user by 
+spoofing his IP address and trying to connect to the server with wrong passwords.
+
+
+## Network scan
+Note: As we said earlier, before to run this attack, we need to clear the mininet cache by using the command `sudo mn -c` and then restart the network topology by using the command `sudo -E python3 ~/LINFO2347/topo-default.py` to reset the network to its initial state.
 ### attack
 
 We will perform the Network Attack from the internet in 2 different phases:
 1. We will scan the subnet (10.12.0.0/24) with ICMP requests (see ./attacks/02_network_scan.py)
 2. We will mass-send SYN packets to every discovered host (aka any host that replied to ICMP echo request) on every single TCP port from 1 to 1000 and wait for replies
+
+This is the command to launch the attack from the internet:
+```bash
+mininet> internet python /home/mininet/LINFO2347/attacks/02_network_scan.py
+```
 
 ```python
 import asyncio
@@ -239,7 +363,7 @@ if __name__ == "__main__":
     loop.run_until_complete(main())
 ```
 
-
+### Result of the attack
 The following attack on the default network outputs this result:
 
 ```
@@ -270,11 +394,11 @@ Open ports on the host 10.12.0.40: [21, 22]
 
 
 We successfully performed a TCP network scan on every accessible host in the `10.12.0.0/24` subnet.
-Doing this for UDP is more challenging wihtout specialized tools such as NMAP as UDP is stateless, and sending empty requests to some UDP servers doesn't guarantee a response even though the port is open.
+Doing this for UDP is more challenging without specialized tools such as NMAP as UDP is stateless, and sending empty requests to some UDP servers doesn't guarantee a response even though the port is open.
 
-### Mitigation
+### Protection
 
-To mitigate network scanning, we implemented the same protectin as ssh bruteforce attack (ban the ip address sending a suspicious amount of suspicious packets for 2 minutes), as this attack is basically ICMP brute-forcing, and creatting a massive amount of new connections that is rarely justified for a single host in the real world. Of course if some service legitimately creates a lot of new TCP connections, we can create an exception for it with `nftables`.
+To mitigate network scanning, we implemented the same protection as ssh bruteforce attack (ban the ip address sending a suspicious amount of suspicious packets for 2 minutes), as this attack is basically ICMP brute-forcing, and creatting a massive amount of new connections that is rarely justified for a single host in the real world. Of course if some service legitimately creates a lot of new TCP connections, we can create an exception for it with `nftables`.
 ```nftables
 table inet r2 {
   set blocklist {
@@ -300,12 +424,28 @@ table inet r2 {
 }
 ```
 
+Command to run the protection:
+```bash
+sudo -E python3 ~/LINFO2347/topo-default.py --fw 02
+```
+[//]: # (TODO)
+Why the rate limit is set to 120 ICMP requests per minute and 50 TCP connections per minute?
+This is a reasonable limit for a single host. If a host is sending more than 120 ICMP requests per minute, it is likely 
+that it is performing a network scan. The same goes for TCP connections. If a host is creating more than 50 new TCP connections per minute, it is likely that it is performing a network scan.
 
+### Test the protection
+To test the protection, you can simply run the network scan attack again.
+```bash
+mininet> internet python /home/mininet/LINFO2347/attacks/02_network_scan.py
+```
+You can see that the attacker is blocked after sending an amount of ICMP echo requests or TCP connections per minute. 
+The firewall blocks the attacker's ip address for 2 minutes after sending 120 ICMP requests or 50 TCP connections per minute.
+![Screenshot 2024-05-17 at 16.03.03.png](..%2F..%2F..%2F..%2Fvar%2Ffolders%2Fmj%2Fg2t_mwr929g8zyfpzwm6mymh0000gn%2FT%2FTemporaryItems%2FNSIRD_screencaptureui_bVj7vu%2FScreenshot%202024-05-17%20at%2016.03.03.png)
 ## Reflection attack
 
 ### attack
 
-We proceeded with DDoS by DNS reflection attack. This attack consists of spooging attacker's IP address and sending a big amount of requests to one or multiple DNS servers on behalf of the victim.
+We proceeded with DDoS by DNS reflection attack. This attack consists of spoofing attacker's IP address and sending a big amount of requests to one or multiple DNS servers on behalf of the victim.
 This technique allows us to multiply the bandwidth of the attack to perform a more powerful attack with less bandwidth.
 To perform this attack, we edited `dnsmasq.conf` to add a big number of TXT records to the domain name `this-is-the-rather-long-domain-name.example.com`. In this case there is only one DNS server, but we can suppose that the local enterprise 
 
@@ -360,7 +500,7 @@ mininet> iperf ws2 dns
 ```
 
 
-### mitigation
+### Protection
 One form of mitigation here might be to filter packets pretanding to originate from places they don't originate from ([https://www.rfc-editor.org/rfc/rfc2827.txt](BCP 38)).
 For example, router r2 with two interfaces: eth0 (connected to the internet) and eth12 (connected to the internal LAN). 
 The subnet for eth0 is 10.2.0.0/24. We should block any packets falsely claiming to come from a local IP address, 
@@ -372,6 +512,23 @@ To prevent this kind of activity, we would have to rate limit our DNS server and
 
 
 ## ARP Cache poisoning
+
+
+### Attack
+
+```python
+
+```
+
+### Mitigation
+
+
+```
+# nftables: 
+```
+
+
+## SYN Flood
 
 
 ### Attack
